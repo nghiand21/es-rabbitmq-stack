@@ -1,0 +1,26 @@
+# Biến không nhạy cảm -> commit được (đổi tên thành group_vars/es_stack.yml).
+# Biến nhạy cảm (*_pass, elastic_password) -> AWX Custom Credential / ansible-vault, KHÔNG để ở đây.
+stack_repo_url: git@github.com:ORG/es-rabbitmq-stack.git
+stack_repo_version: main            # nên pin tag release, vd v1.0.0
+stack_dir: /opt/es-rabbitmq-stack
+stack_acme_mode: http               # http | dns
+admin_ssh_cidrs: ["192.0.2.10/32"]
+
+es_domain: es.example.com
+rmq_domain: mq.example.com
+acme_email: devops@example.com
+es_allowed_cidrs: "10.0.0.0/8,192.0.2.10/32"
+rmq_mgmt_allowed_cidrs: "192.0.2.10/32"
+amqp_allowed_cidrs: "10.0.0.0/8,192.0.2.10/32"
+
+traefik_version: v3.7.10
+es_version: 7.10.1
+rabbitmq_version: 3-management
+es_writer_image: luandnh1998/es-writer:latest
+es_heap: 2g
+es_mem_limit: 4g
+es_writer_replicas: 1
+
+# --- secrets (inject từ AWX credential) ---
+# elastic_password, es_writer_pass, es_app_pass, es_reader_pass,
+# rmq_admin_pass, rmq_eswriter_pass, rmq_publisher_pass, [acme_dns_token]

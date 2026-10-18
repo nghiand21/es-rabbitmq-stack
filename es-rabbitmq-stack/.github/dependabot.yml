@@ -1,0 +1,6 @@
+# Image version nằm trong .env -> nâng cấp qua PR sửa .env.example (Dependabot không đọc được biến).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

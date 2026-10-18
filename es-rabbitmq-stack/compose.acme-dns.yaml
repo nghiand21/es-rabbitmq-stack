@@ -1,0 +1,14 @@
+# ACME DNS-01: dùng khi port 80 không mở được ra Internet hoặc host nằm sau NAT/LB.
+# Provider list: https://doc.traefik.io/traefik/https/acme/#providers
+# Ví dụ Cloudflare: token scope tối thiểu = Zone:DNS:Edit cho đúng zone.
+services:
+  traefik:
+    environment:
+      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_DNSCHALLENGE_PROVIDER: ${ACME_DNS_PROVIDER:?set ACME_DNS_PROVIDER}
+      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_DNSCHALLENGE_RESOLVERS: "1.1.1.1:53,8.8.8.8:53"
+      CF_DNS_API_TOKEN_FILE: /run/secrets/acme_dns_token
+    secrets:
+      - acme_dns_token
+secrets:
+  acme_dns_token:
+    file: ./secrets/acme_dns_token   # chmod 600, không commit

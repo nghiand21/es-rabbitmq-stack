@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/.gitkeep
+*.pem
+*.key
+acme.json
+ansible/*.retry
+ansible/inventory.ini

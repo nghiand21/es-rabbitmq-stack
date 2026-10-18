@@ -1,0 +1,145 @@
+# DevSecOps gate cho repo IaC.
+# - Mọi action pin theo full commit SHA (bài học CVE-2026-33634: tag trivy-action bị force-push).
+#   Cập nhật SHA qua Dependabot (.github/dependabot.yml), không sửa tay sang tag.
+# - Token tối thiểu: contents:read; chỉ job upload SARIF cần security-events:write.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 1 * * 1"   # quét lại hằng tuần (08:00 ICT thứ 2) để bắt CVE/misconfig mới
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: TruffleHog (secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: trufflesecurity/trufflehog@e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9 # v3.99.2
+        with:
+          extra_args: --results=verified,unknown --fail
+
+  iac:
+    name: Trivy config (IaC) + fs (SCA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Trivy config (misconfig in compose / workflows / ansible)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.0
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+      - name: Trivy fs (SCA + secrets, SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          skip-setup-trivy: true
+      - uses: github/codeql-action/upload-sarif@48870fdd6b42ee6474ec4207209ff87609271a5e # v4.39.0
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  images:
+    name: Trivy image (pinned runtime images)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve images from compose
+        id: imgs
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          sed -i 's/=CHANGE_ME/=ci-placeholder/' .env
+          docker compose config --images | sort -u | tee images.txt
+      - name: Scan each image (report only — ES 7.10.1 / RMQ 3.x đã EOL, chắc chắn có CVE)
+        run: |
+          set -euo pipefail
+          while read -r img; do
+            echo "::group::$img"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              ghcr.io/aquasecurity/trivy:0.76.0 image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 "$img"
+            echo "::endgroup::"
+          done < images.txt
+
+  sast:
+    name: Semgrep + ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: semgrep/semgrep:1.181.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Semgrep
+        run: semgrep scan --metrics=off --error --config p/docker-compose --config p/github-actions --config p/bash --config p/secrets
+
+  lint:
+    name: Compose / ShellCheck / Ansible lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: docker compose config
+        run: |
+          set -euo pipefail
+          cp .env.example .env && sed -i 's/=CHANGE_ME/=ci-placeholder/' .env
+          docker compose config -q
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          scandir: ./scripts
+          additional_files: scripts/lib.sh
+      - name: ansible-lint
+        run: |
+          pipx install ansible-lint
+          ansible-lint ansible/site.yml
+
+  sonarqube:
+    name: SonarQube
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ vars.SONAR_HOST_URL != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}

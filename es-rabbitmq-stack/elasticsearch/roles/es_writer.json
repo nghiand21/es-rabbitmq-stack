@@ -1,0 +1,9 @@
+{
+  "cluster": ["monitor"],
+  "indices": [
+    {
+      "names": ["__INDEX_PATTERNS__"],
+      "privileges": ["create_index", "create_doc", "index", "write", "read", "view_index_metadata", "manage"]
+    }
+  ]
+}

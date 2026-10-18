@@ -1,0 +1,5 @@
+# ACME HTTP-01: cần port 80 mở từ Internet và A record của ES_DOMAIN/RMQ_DOMAIN trỏ về host.
+services:
+  traefik:
+    environment:
+      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_HTTPCHALLENGE_ENTRYPOINT: web

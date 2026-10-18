@@ -1,0 +1,86 @@
+# Go template (Traefik file provider + Sprig). Giá trị lấy từ env của container traefik.
+# CIDR list trong .env: phân tách bằng dấu phẩy, ví dụ "10.0.0.0/8,203.0.113.10/32".
+{{- define "cidrs" }}
+{{- range (splitList "," .) }}
+          - "{{ trim . }}"
+{{- end }}
+{{- end }}
+http:
+  routers:
+    elasticsearch:
+      rule: 'Host(`{{ env "ES_DOMAIN" }}`)'
+      entryPoints: [websecure]
+      service: elasticsearch
+      middlewares: [es-allowlist, es-ratelimit, secure-headers]
+      tls:
+        certResolver: le
+
+    rabbitmq-mgmt:
+      rule: 'Host(`{{ env "RMQ_DOMAIN" }}`)'
+      entryPoints: [websecure]
+      service: rabbitmq-mgmt
+      middlewares: [rmq-mgmt-allowlist, secure-headers]
+      tls:
+        certResolver: le
+
+  services:
+    elasticsearch:
+      loadBalancer:
+        servers:
+          - url: "http://es:9200"
+        healthCheck:
+          path: /
+          interval: 30s
+          status: 401          # ES bật auth -> 401 nghĩa là còn sống
+    rabbitmq-mgmt:
+      loadBalancer:
+        servers:
+          - url: "http://rabbitmq:15672"
+
+  middlewares:
+    es-allowlist:
+      ipAllowList:
+        sourceRange:
+{{- template "cidrs" (env "ES_ALLOWED_CIDRS") }}
+    rmq-mgmt-allowlist:
+      ipAllowList:
+        sourceRange:
+{{- template "cidrs" (env "RMQ_MGMT_ALLOWED_CIDRS") }}
+    es-ratelimit:
+      rateLimit:
+        average: 500
+        burst: 1000
+    secure-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: no-referrer
+        customResponseHeaders:
+          Server: ""
+          X-Powered-By: ""
+
+tcp:
+  routers:
+    amqps:
+      rule: 'HostSNI(`{{ env "RMQ_DOMAIN" }}`)'
+      entryPoints: [amqps]
+      service: rabbitmq-amqp
+      middlewares: [amqp-allowlist]
+      tls:
+        certResolver: le
+        domains:
+          - main: '{{ env "RMQ_DOMAIN" }}'
+
+  services:
+    rabbitmq-amqp:
+      loadBalancer:
+        servers:
+          - address: "rabbitmq:5672"
+
+  middlewares:
+    amqp-allowlist:
+      ipAllowList:
+        sourceRange:
+{{- template "cidrs" (env "AMQP_ALLOWED_CIDRS") }}

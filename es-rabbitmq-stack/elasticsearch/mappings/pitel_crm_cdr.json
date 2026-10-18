@@ -1,0 +1,155 @@
+{
+  "mappings": {
+    "properties": {
+      "answer_time": {
+        "type": "keyword"
+      },
+      "application": {
+        "type": "keyword"
+      },
+      "billsec": {
+        "type": "long"
+      },
+      "call_id": {
+        "type": "keyword"
+      },
+      "campaign_uuid": {
+        "type": "keyword"
+      },
+      "cdr_uuid": {
+        "type": "keyword"
+      },
+      "contact_uuid": {
+        "type": "keyword"
+      },
+      "created_at": {
+        "type": "keyword"
+      },
+      "created_by": {
+        "type": "keyword"
+      },
+      "digits": {
+        "type": "keyword"
+      },
+      "direction": {
+        "type": "keyword"
+      },
+      "district": {
+        "type": "keyword"
+      },
+      "domain_name": {
+        "type": "keyword"
+      },
+      "domain_uuid": {
+        "type": "keyword"
+      },
+      "duration": {
+        "type": "long"
+      },
+      "end_time": {
+        "type": "keyword"
+      },
+      "extension": {
+        "type": "keyword"
+      },
+      "extension_uuid": {
+        "type": "keyword"
+      },
+      "from_number": {
+        "type": "keyword"
+      },
+      "gender": {
+        "type": "keyword"
+      },
+      "hotline": {
+        "type": "keyword"
+      },
+      "press_key": {
+        "type": "keyword"
+      },
+      "profile_uuid": {
+        "type": "keyword"
+      },
+      "province": {
+        "type": "keyword"
+      },
+      "rate": {
+        "type": "keyword"
+      },
+      "receive_dest": {
+        "type": "keyword"
+      },
+      "recording_url": {
+        "type": "keyword"
+      },
+      "ref_id": {
+        "type": "keyword"
+      },
+      "sip_call_id": {
+        "type": "keyword"
+      },
+      "sip_hangup_disposition": {
+        "type": "keyword"
+      },
+      "start_time": {
+        "type": "keyword"
+      },
+      "state": {
+        "type": "keyword"
+      },
+      "status": {
+        "type": "keyword"
+      },
+      "classify_tags": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "classify_groups": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "classify_careers": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "to_number": {
+        "type": "keyword"
+      },
+      "unit_uuid": {
+        "type": "keyword"
+      },
+      "updated_at": {
+        "type": "keyword"
+      },
+      "updated_by": {
+        "type": "keyword"
+      },
+      "ward": {
+        "type": "keyword"
+      },
+      "ticket_uuid": {
+        "type": "keyword"
+      }
+    }
+  },
+  "settings": {
+    "index": {
+      "number_of_shards": 1
+    }
+  }
+}
