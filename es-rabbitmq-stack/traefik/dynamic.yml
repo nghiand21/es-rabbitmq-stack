@@ -1,0 +1,44 @@
+http:
+  routers:
+    es:
+      entryPoints: [es]
+      rule: 'Host(`{{ env "DOMAIN" }}`)'
+      service: es
+      tls:
+        certResolver: le
+    rabbitmq-gui:
+      entryPoints: [rabbitmq-gui]
+      rule: 'Host(`{{ env "DOMAIN" }}`)'
+      service: rabbitmq-gui
+      tls:
+        certResolver: le
+  services:
+    es:
+      loadBalancer:
+        servers:
+          - url: "http://es:9200"
+    rabbitmq-gui:
+      loadBalancer:
+        servers:
+          - url: "http://rabbitmq:15672"
+
+tcp:
+  routers:
+    amqps:
+      entryPoints: [amqps]
+      rule: 'HostSNI(`{{ env "DOMAIN" }}`)'
+      service: rabbitmq-amqp
+      tls:
+        certResolver: le
+        domains:
+          - main: '{{ env "DOMAIN" }}'
+  services:
+    rabbitmq-amqp:
+      loadBalancer:
+        servers:
+          - address: "rabbitmq:5672"
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12

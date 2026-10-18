@@ -1,177 +1,81 @@
-# =============================================================================
-# ES + RabbitMQ + es-writer stack, fronted by Traefik (TLS termination + ACME)
-#
-#   Internet ──443──► Traefik ──http──► es:9200          (https://${ES_DOMAIN})
-#            ──443──► Traefik ──http──► rabbitmq:15672   (https://${RMQ_DOMAIN})
-#            ──5671─► Traefik ──tcp───► rabbitmq:5672    (amqps://${RMQ_DOMAIN}:5671)
-#            ──80───► Traefik (ACME HTTP-01 + redirect to https)
-#
-# Only Traefik publishes ports. ES / RabbitMQ / es-writer live on an
-# `internal: true` network: no published ports, no egress to the internet.
-# Pick the ACME challenge via COMPOSE_FILE in .env (http-01 or dns-01 override).
-# =============================================================================
-name: ${STACK_NAME:-es-stack}
-
-x-logging: &logging
-  driver: json-file
-  options:
-    max-size: "50m"
-    max-file: "5"
-    tag: "{{.Name}}"
-
-x-hardening: &hardening
-  security_opt:
-    - no-new-privileges:true
-  restart: unless-stopped
-  logging: *logging
-
 services:
-  # ---------------------------------------------------------------------------
   traefik:
-    <<: *hardening
-    image: traefik:${TRAEFIK_VERSION:?set TRAEFIK_VERSION}
-    read_only: true
-    cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
+    image: traefik:${TRAEFIK_VERSION}
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --entrypoints.web.address=:80            # chỉ dùng để xin/renew SSL
+      - --entrypoints.es.address=:9200
+      - --entrypoints.rabbitmq-gui.address=:15672
+      - --entrypoints.amqps.address=:5671
+      - --entrypoints.amqps.transport.respondingTimeouts.readTimeout=0
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --log.format=json
+    environment:
+      DOMAIN: ${DOMAIN}
     ports:
       - "80:80"
-      - "443:443"
+      - "9200:9200"
+      - "15672:15672"
       - "5671:5671"
-    environment:
-      # Static config is env-only (Traefik allows exactly one static source).
-      TRAEFIK_GLOBAL_CHECKNEWVERSION: "false"
-      TRAEFIK_GLOBAL_SENDANONYMOUSUSAGE: "false"
-      TRAEFIK_LOG_LEVEL: ${TRAEFIK_LOG_LEVEL:-INFO}
-      TRAEFIK_LOG_FORMAT: json
-      TRAEFIK_ACCESSLOG: "true"
-      TRAEFIK_ACCESSLOG_FORMAT: json
-      TRAEFIK_ACCESSLOG_FIELDS_HEADERS_DEFAULTMODE: drop   # never log Authorization
-      TRAEFIK_API: "false"                                 # dashboard off
-      TRAEFIK_PING: "true"
-      TRAEFIK_PING_ENTRYPOINT: metrics
-      TRAEFIK_METRICS_PROMETHEUS: "true"
-      TRAEFIK_METRICS_PROMETHEUS_ENTRYPOINT: metrics
-      TRAEFIK_ENTRYPOINTS_WEB_ADDRESS: ":80"
-      TRAEFIK_ENTRYPOINTS_WEB_HTTP_REDIRECTIONS_ENTRYPOINT_TO: websecure
-      TRAEFIK_ENTRYPOINTS_WEB_HTTP_REDIRECTIONS_ENTRYPOINT_SCHEME: https
-      TRAEFIK_ENTRYPOINTS_WEBSECURE_ADDRESS: ":443"
-      TRAEFIK_ENTRYPOINTS_AMQPS_ADDRESS: ":5671"
-      # v3 default readTimeout=60s also kills idle long-lived TCP (AMQP) conns.
-      TRAEFIK_ENTRYPOINTS_AMQPS_TRANSPORT_RESPONDINGTIMEOUTS_READTIMEOUT: "0"
-      TRAEFIK_ENTRYPOINTS_METRICS_ADDRESS: ":8082"          # internal only, not published
-      TRAEFIK_PROVIDERS_FILE_DIRECTORY: /etc/traefik/dynamic
-      TRAEFIK_PROVIDERS_FILE_WATCH: "true"
-      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
-      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_STORAGE: /letsencrypt/acme.json
-      TRAEFIK_CERTIFICATESRESOLVERS_LE_ACME_CASERVER: ${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
-      # Consumed by Go templates in traefik/dynamic/*.yml
-      ES_DOMAIN: ${ES_DOMAIN:?set ES_DOMAIN}
-      RMQ_DOMAIN: ${RMQ_DOMAIN:?set RMQ_DOMAIN}
-      ES_ALLOWED_CIDRS: ${ES_ALLOWED_CIDRS:?set ES_ALLOWED_CIDRS}
-      RMQ_MGMT_ALLOWED_CIDRS: ${RMQ_MGMT_ALLOWED_CIDRS:?set RMQ_MGMT_ALLOWED_CIDRS}
-      AMQP_ALLOWED_CIDRS: ${AMQP_ALLOWED_CIDRS:?set AMQP_ALLOWED_CIDRS}
     volumes:
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
-      - traefik-acme:/letsencrypt
-    networks: [public, internal]
-    healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entrypoint=metrics", "--entrypoints.metrics.address=:8082"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits: { cpus: "1.0", memory: 256M }
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - letsencrypt:/letsencrypt
+    networks:
+      - proxy
 
-  # ---------------------------------------------------------------------------
   es:
-    <<: *hardening
-    image: elasticsearch:${ES_VERSION:?set ES_VERSION}
-    hostname: es01
+    image: elasticsearch:${ES_VERSION}
+    container_name: es
+    restart: unless-stopped
     environment:
-      node.name: es01
-      cluster.name: ${ES_CLUSTER_NAME:-es-cluster}
-      discovery.type: single-node
+      cluster.name: es-cluster
       bootstrap.memory_lock: "true"
-      # -Dlog4j2.formatMsgNoLookups: mitigation CVE-2021-44228/45046 cho ES 7.10.x (log4j 2.11)
-      ES_JAVA_OPTS: "-Xms${ES_HEAP:-2g} -Xmx${ES_HEAP:-2g} -Dlog4j2.formatMsgNoLookups=true"
-      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?set ELASTIC_PASSWORD}
+      discovery.type: single-node
+      network.host: 0.0.0.0
+      ES_JAVA_OPTS: "-Xms2g -Xmx2g -Dlog4j2.formatMsgNoLookups=true"
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
       xpack.security.enabled: "true"
-      # TLS is terminated at Traefik; ES HTTP is reachable only on the
-      # isolated internal network. See README §Thiết kế for the trade-off.
-      xpack.security.http.ssl.enabled: "false"
-      xpack.security.transport.ssl.enabled: "false"
-      xpack.license.self_generated.type: basic
-      xpack.ml.enabled: "false"
-      action.destructive_requires_name: "true"   # block DELETE /*
-      path.repo: /usr/share/elasticsearch/snapshots
     ulimits:
       memlock: { soft: -1, hard: -1 }
-      nofile: { soft: 65535, hard: 65535 }
     volumes:
       - esdata:/usr/share/elasticsearch/data
-      - es-snapshots:/usr/share/elasticsearch/snapshots
-    networks: [internal]
-    healthcheck:
-      # -s fail on non-2xx; creds read from env inside the container only
-      test: ["CMD-SHELL", "curl -fsS -u \"elastic:$${ELASTIC_PASSWORD}\" 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
-      interval: 20s
-      timeout: 10s
-      retries: 15
-      start_period: 60s
-    deploy:
-      resources:
-        limits: { cpus: "${ES_CPUS:-2}", memory: "${ES_MEM_LIMIT:-4g}" }
+    networks:
+      - proxy
 
-  # ---------------------------------------------------------------------------
   rabbitmq:
-    <<: *hardening
-    image: rabbitmq:${RABBITMQ_VERSION:?set RABBITMQ_VERSION}
-    hostname: rabbitmq            # node name = rabbit@rabbitmq -> stable data dir
-    volumes:
-      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/90-stack.conf:ro
-      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-      - rabbitmq-data:/var/lib/rabbitmq
-    networks: [internal]
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
-    deploy:
-      resources:
-        limits: { cpus: "${RMQ_CPUS:-1}", memory: "${RMQ_MEM_LIMIT:-1g}" }
-
-  # ---------------------------------------------------------------------------
-  es-writer:
-    <<: *hardening
-    image: ${ES_WRITER_IMAGE:?set ES_WRITER_IMAGE}
-    cap_drop: [ALL]
-    depends_on:
-      es: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
+    image: rabbitmq:${RABBITMQ_VERSION}
+    container_name: rabbitmq
+    restart: unless-stopped
     environment:
-      RABBITMQ_URL: amqp://${RMQ_ESWRITER_USER}:${RMQ_ESWRITER_PASS}@rabbitmq:5672/${RMQ_VHOST:-pitel}
-      RABBITMQ_ROUTING_KEY: ${RABBITMQ_ROUTING_KEY:-es.writer}
-      ES_URL: http://es:9200/?sniff=false
-      ES_USERNAME: ${ES_WRITER_USER:?set ES_WRITER_USER}
-      ES_PASSWORD: ${ES_WRITER_PASS:?set ES_WRITER_PASS}
-    networks: [internal]
-    deploy:
-      replicas: ${ES_WRITER_REPLICAS:-1}    # thay cho việc tạo folder es-writer-2
-      resources:
-        limits: { cpus: "0.5", memory: 256M }
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    networks:
+      - proxy
+
+  es-writer:
+    image: ${ES_WRITER_IMAGE}
+    container_name: es-writer
+    restart: unless-stopped
+    depends_on:
+      - es
+      - rabbitmq
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
+      - RABBITMQ_ROUTING_KEY=es.writer
+      - ES_URL=http://es:9200/?sniff=false
+      - ES_USERNAME=elastic
+      - ES_PASSWORD=${ELASTIC_PASSWORD}
+    networks:
+      - proxy
 
 networks:
-  public:
-    name: ${STACK_NAME:-es-stack}_public
-  internal:
-    name: ${STACK_NAME:-es-stack}_internal
-    internal: true
+  proxy:
+    external: true
 
 volumes:
-  traefik-acme:
   esdata:
-  es-snapshots:
-  rabbitmq-data:
+  letsencrypt:
