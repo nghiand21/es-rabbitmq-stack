@@ -1,30 +1,23 @@
-# Guide setup dev/prod environment
+# ES - RabbitMQ - ES-writer stack
 
-## Chọn chế độ triển khai trước
+## Chọn chế độ triển khai
 
-| Tổng đài (PBX/CCP) kết nối tới ES/RabbitMQ bằng... | Xem phần |
+| Tổng đài (PBX/CCP) kết nối tới ES/RabbitMQ qua | Làm theo |
 |---|---|
-| **IP private** — ES/RabbitMQ chung hạ tầng vật lý / mạng nội bộ với tổng đài | **Phần 1** (không SSL/TLS cho ES và AMQP) |
-| **Internet** — ES/RabbitMQ ở server/DC khác, đi qua IP public | **Phần 2** (SSL/TLS Let's Encrypt) |
-
-Cả 2 chế độ đều phải làm **Phần 0** trước. RabbitMQ GUI ở cả 2 chế độ đều ra public qua HTTPS, **chỉ cho phép IP công ty** (`RABBITMQ_GUI_ALLOW_IPS`).
-
-> Chỉ chọn Phần 1 khi tổng đài có IP private cùng mạng nội bộ riêng của mình với server này (cùng host / cùng VLAN / cùng mạng private trên cloud). Nếu "private" nhưng dùng chung với khách hàng khác hoặc đi qua link không mã hoá giữa 2 site → dùng Phần 2.
+| **IP private** (chung hạ tầng / mạng nội bộ với tổng đài) | **Phần 0 → Phần 1** |
+| **Internet** (IP public, khác hạ tầng) | **Phần 0 → Phần 2** |
 
 | | Phần 1 – Local (IP private) | Phần 2 – Internet |
 |---|---|---|
 | Elasticsearch | `http://<PRIVATE_IP>:9200` | `https://<DOMAIN>:9200` |
 | RabbitMQ AMQP | `amqp://<PRIVATE_IP>:5672` | `amqps://<DOMAIN>:5671` |
-| RabbitMQ GUI (chỉ IP công ty) | `https://<IP public>:15672` (cert tự ký) | `https://<DOMAIN>:15672` |
-| Cần domain + DNS | Không | Có, bản ghi A trỏ về IP public server |
+| RabbitMQ GUI (chỉ IP công ty) | `https://<IP public>:15672` | `https://<DOMAIN>:15672` |
+| Domain + SSL Let's Encrypt | Không cần | Cần |
 | File compose | `compose.private.yaml` | `compose.yaml` |
-| Port mở ra internet | **15672** (chỉ IP công ty) | **80, 9200, 15672, 5671** |
 
-Ở Phần 2, port 80 dùng để xin và tự gia hạn SSL Let's Encrypt, phải mở.
+## 0. Chuẩn bị chung
 
-## 0. Chuẩn bị chung (cả 2 chế độ)
-
-### 0.1. Install Package Required
+### 0.1. Cài Docker
 
 ```bash
 sudo apt-get update
@@ -43,11 +36,13 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 
 ```bash
 git clone <URL repo> /root/project/docker-services
-cd /root/project/docker-services
+cd /root/project/docker-services/es-rabbitmq-stack
 docker network create proxy
 ```
 
-### 0.3. Tạo file `.env` và sinh mật khẩu ngẫu nhiên
+Mọi lệnh bên dưới đều chạy trong thư mục `/root/project/docker-services/es-rabbitmq-stack`.
+
+### 0.3. Tạo file `.env`
 
 ```bash
 cp .env.example .env
@@ -56,96 +51,124 @@ sed -i "s/RABBITMQ_PASS=CHANGE_ME/RABBITMQ_PASS=$(openssl rand -hex 16)/" .env
 chmod 600 .env
 ```
 
-Sửa IP được vào RabbitMQ GUI trong `.env` (nhiều IP cách nhau dấu phẩy, VD `113.161.95.53/32, 1.2.3.4/32`):
+IP được vào RabbitMQ GUI (nhiều IP cách nhau dấu phẩy):
 
 ```ini
 RABBITMQ_GUI_ALLOW_IPS=113.161.95.53/32
 ```
 
-`DOMAIN` và `ACME_EMAIL` chỉ dùng cho Phần 2, Phần 1 bỏ qua.
-
-### 0.4. Thông tin tài khoản
+### 0.4. Tài khoản
 
 Xem mật khẩu: `grep -E 'USER|PASS' .env`
 
 - Elasticsearch: user `elastic`, password `ELASTIC_PASSWORD`
 - RabbitMQ: user `RABBITMQ_USER` (mặc định `tel4vn`), password `RABBITMQ_PASS`
 
-Sau đó làm **Phần 1** hoặc **Phần 2**, không làm cả hai.
-
-## 1. Triển khai LOCAL — tổng đài kết nối qua IP private
-
-ES và AMQP đi plaintext qua IP private (vẫn có user/pass). Không cần domain. RabbitMQ GUI đi qua Traefik với cert tự ký.
+## 1. Triển khai LOCAL – kết nối qua IP private
 
 ### 1.1. Khai báo IP private
 
-Thêm IP private của server này (cùng mạng với tổng đài) vào `.env`:
+IP private của server này trong `.env`:
 
 ```ini
 PRIVATE_IP=192.168.0.148
 ```
 
-Bắt buộc phải set: ES (9200) và AMQP (5672) chỉ bind vào IP này. Để trống thì compose sẽ báo lỗi và dừng.
+### 1.2. Security Group
 
-### 1.2. Firewall / Security Group (BẮT BUỘC)
+Thêm 2 rule inbound vào Security Group của server:
 
-Chỉ bind `PRIVATE_IP` là **chưa đủ**. Trên cloud (CMC, ...) IP public được NAT 1:1 về IP private, nên truy cập `<IP public>:9200` từ internet vẫn tới được ES. Cũng không dùng được UFW vì port Docker publish đi vòng qua UFW. Phải chặn ở Security Group của cloud (stateful):
-
-**Inbound** (ngoài các rule này là chặn hết):
-
-| Port | Nguồn | Mục đích |
+| Protocol | Port | CIDR |
 |---|---|---|
-| 22/tcp | IP công ty / bastion | SSH — **thêm rule này trước** để không mất SSH |
-| 15672/tcp | `113.161.95.53/32` | RabbitMQ GUI |
-| 9200/tcp | dải private của tổng đài (VD `192.168.0.0/24`) | Elasticsearch |
-| 5672/tcp | dải private của tổng đài | AMQP |
+| TCP | 9200 | `192.168.0.0/24` |
+| TCP | 5672 | `192.168.0.0/24` |
 
-**Outbound:** cho phép tất cả (`0.0.0.0/0`, any) để còn `docker pull`, `apt`, DNS. Không có rule outbound nào thì server không tự kết nối ra ngoài được.
+### 1.3. iptables
 
-Kiểm tra VM **không còn gắn Security Group nào khác** mở các port trên (rule của nhiều SG được cộng dồn).
+Chỉ cho dải `192.168.0.0/24` vào 9200 và 5672, tự áp lại mỗi khi Docker khởi động.
 
-### 1.3. Deploy
+Tạo script (sửa 2 dòng đầu nếu IP/dải khác):
+
+```bash
+cat > /usr/local/sbin/es-rabbit-firewall.sh <<'EOF'
+#!/bin/sh
+PRIVATE_IP=192.168.0.148      # = PRIVATE_IP trong .env
+ALLOW_CIDR=192.168.0.0/24     # dải IP private của tổng đài
+for port in 9200 5672; do
+  rule="-p tcp -m conntrack --ctorigdst $PRIVATE_IP --ctorigdstport $port --ctdir ORIGINAL ! -s $ALLOW_CIDR -j DROP"
+  iptables -C DOCKER-USER $rule 2>/dev/null || iptables -I DOCKER-USER $rule
+done
+EOF
+chmod +x /usr/local/sbin/es-rabbit-firewall.sh
+```
+
+Tạo service chạy script cùng Docker:
+
+```bash
+cat > /etc/systemd/system/es-rabbit-firewall.service <<'EOF'
+[Unit]
+Description=Firewall ES/RabbitMQ (DOCKER-USER)
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/es-rabbit-firewall.sh
+
+[Install]
+WantedBy=docker.service
+EOF
+systemctl daemon-reload
+systemctl enable --now es-rabbit-firewall
+iptables -S DOCKER-USER
+```
+
+Kết quả có 2 dòng `-A DOCKER-USER ! -s 192.168.0.0/24 ... --ctorigdstport 9200|5672 ... -j DROP`.
+
+### 1.4. Deploy
 
 ```bash
 docker compose -f compose.private.yaml up -d
 ```
 
-Chờ 2–5 phút để service setup xong. Lúc đầu `es-writer` có thể restart vài lần do RabbitMQ chưa sẵn sàng, sau đó tự ổn.
+Chờ 2–5 phút để service khởi động xong.
 
-### 1.4. Kiểm tra
+### 1.5. Kiểm tra
 
-Chạy từ server tổng đài:
+Từ server tổng đài (IP `192.168.0.x`):
 
 ```bash
 curl -u elastic http://<PRIVATE_IP>:9200
 nc -zv <PRIVATE_IP> 5672
 ```
 
-Từ một máy ngoài internet, `telnet <IP public> 9200` và `telnet <IP public> 5672` phải bị **timeout**.
+Từ máy ngoài internet, 2 lệnh sau phải **timeout**:
 
-RabbitMQ GUI: từ mạng công ty truy cập `https://<IP public>:15672`. Trình duyệt sẽ cảnh báo cert (cert tự ký), chọn Advanced → Proceed. Đăng nhập bằng user/pass RabbitMQ, check tab **Channels**. Ngoài mạng công ty sẽ nhận `403 Forbidden` (hoặc timeout nếu Security Group đã chặn).
+```bash
+telnet <IP public> 9200
+telnet <IP public> 5672
+```
 
-### 1.5. Config CCP
+RabbitMQ GUI: từ mạng công ty mở `https://<IP public>:15672` (cert tự ký, chọn Advanced → Proceed), đăng nhập user/pass RabbitMQ, check tab **Channels**.
 
-Trong file config json của CCP (tham khảo Pitel04):
+### 1.6. Config CCP
 
 - Elasticsearch: `http://<PRIVATE_IP>:9200`
 - RabbitMQ: `amqp://<user>:<pass>@<PRIVATE_IP>:5672/`
 
-Tiếp tục **Phần 3**, thay `<ES_URL>` bằng `http://<PRIVATE_IP>:9200`.
+## 2. Triển khai INTERNET – kết nối qua IP public
 
-## 2. Triển khai INTERNET — tổng đài kết nối qua IP public
+### 2.1. Domain
 
-Toàn bộ ES, AMQP, GUI đi qua Traefik với SSL Let's Encrypt tự gia hạn.
-
-### 2.1. Khai báo domain
-
-Bản ghi DNS A của domain trỏ về IP public server. Sửa trong `.env`:
+Tạo bản ghi DNS A trỏ domain về IP public server, sửa `.env`:
 
 ```ini
 DOMAIN=es.example.com
 ACME_EMAIL=devops@example.com
 ```
+
+Mở port **80, 9200, 15672, 5671** (port 80 để xin và tự gia hạn SSL).
 
 ### 2.2. Deploy
 
@@ -153,7 +176,7 @@ ACME_EMAIL=devops@example.com
 docker compose up -d
 ```
 
-Chờ 2–5 phút để service setup xong. SSL được xin tự động ở lần chạy đầu.
+Chờ 2–5 phút. SSL được xin tự động ở lần chạy đầu.
 
 ### 2.3. Kiểm tra
 
@@ -161,68 +184,91 @@ Chờ 2–5 phút để service setup xong. SSL được xin tự động ở l�
 curl -u elastic https://<DOMAIN>:9200
 ```
 
-Postman: `GET https://{{DOMAIN}}:9200`, Authorization = Basic Auth (user `elastic`).
-
-RabbitMQ GUI: từ mạng công ty truy cập `https://<DOMAIN>:15672`, đăng nhập bằng user/pass RabbitMQ, check tab **Channels**. Ngoài mạng công ty sẽ nhận `403 Forbidden`.
+RabbitMQ GUI: từ mạng công ty mở `https://<DOMAIN>:15672`, đăng nhập user/pass RabbitMQ, check tab **Channels**.
 
 ### 2.4. Config CCP
-
-Trong file config json của CCP (tham khảo Pitel04):
 
 - Elasticsearch: `https://<DOMAIN>:9200`
 - RabbitMQ: `amqps://<user>:<pass>@<DOMAIN>:5671/`
 
-Phải dùng domain, không dùng IP (cert SSL cấp theo domain).
+Dùng domain, không dùng IP.
 
-Tiếp tục **Phần 3**, thay `<ES_URL>` bằng `https://<DOMAIN>:9200`.
+## 3. Vận hành
 
-## 3. Vận hành (cả 2 chế độ)
+Trong phần này, `<compose>` là:
 
-Lệnh `docker compose` bên dưới: Phần 1 thêm `-f compose.private.yaml`, Phần 2 để nguyên.
+- Phần 1: `docker compose -f compose.private.yaml`
+- Phần 2: `docker compose`
 
-### 3.1. Muốn tạo thêm Consumers thứ 2
+`<ES_URL>` là `http://<PRIVATE_IP>:9200` (Phần 1) hoặc `https://<DOMAIN>:9200` (Phần 2).
 
-- **Phần 1 (Local):** chỉ sửa `compose.private.yaml`, thêm vào dưới `services:`:
+### 3.1. Thêm consumer (không ảnh hưởng service đang chạy)
 
-  ```yaml
-    es-writer-2:
-      extends: { file: compose.yaml, service: es-writer }
-      container_name: es-writer-2
-  ```
+Thêm block sau vào dưới `services:` của file compose đang dùng (`compose.private.yaml` hoặc `compose.yaml`), mỗi consumer một tên mới:
 
-  Rồi chạy `docker compose -f compose.private.yaml up -d`.
+```yaml
+  es-writer-2:
+    extends: { file: compose.yaml, service: es-writer }
+    container_name: es-writer-2
+```
 
-- **Phần 2 (Internet):** chỉ sửa `compose.yaml`, thêm service `es-writer-2` (copy y hệt `es-writer`, đổi `container_name: es-writer-2`). Rồi chạy `docker compose up -d`.
+Chỉ khởi động consumer mới:
 
-Trên GUI có show **Consumers: 2** là được.
+```bash
+<compose> up -d --no-deps es-writer-2
+docker exec rabbitmq rabbitmqctl list_queues name consumers
+```
 
-### 3.2. Add PBX - CCP vào ELK có sẵn
+Kết quả `es-writer  2` là được.
 
-#### Cách 1: Tạo index CDR / TTS Log và khởi tạo mapping
+Bỏ consumer:
+
+```bash
+<compose> rm -sf es-writer-2
+```
+
+rồi xoá block `es-writer-2` khỏi file compose.
+
+### 3.2. Cập nhật code
+
+```bash
+git stash
+git pull
+git stash pop
+<compose> up -d
+```
+
+`git stash` giữ lại các consumer đã thêm ở mục 3.1.
+
+### 3.3. Đổi IP được vào RabbitMQ GUI
+
+Sửa `RABBITMQ_GUI_ALLOW_IPS` trong `.env`, rồi:
+
+```bash
+<compose> up -d --no-deps traefik
+```
+
+### 3.4. Tạo index và mapping
+
+#### Index CDR / TTS Log
 
 Truy cập RabbitMQ GUI → Queues → es-writer → Publish message, copy nội dung file mapping vào mục Payload:
 
 - CDR (index `pitel`): https://github.com/tel4vn-team/fusionpbx-go-api/blob/prod_cdr/fixtures/mapping.json
 - TTS Log (index `pitel_ttslog`): https://github.com/tel4vn-team/fusionpbx-go-api/blob/prod_autocall_ccp/fixtures/mapping.json
 
-Lưu ý:
-- Cần add mapping trước khi deploy các service liên quan tới Elasticsearch.
-- Các field nằm ngoài mapping sẽ được tự đưa vào, không cần bổ sung bằng tay nếu không cần thiết.
+Add mapping trước khi deploy các service ghi vào Elasticsearch. Field ngoài mapping sẽ tự được thêm.
 
-Kiểm tra lại mapping đã lên chưa:
+Kiểm tra:
 
 ```bash
 curl -u elastic <ES_URL>/pitel
 ```
 
-#### Cách 2: Tạo index `pitel_crm_cdr`
+#### Index `pitel_crm_cdr`
 
 ```bash
 curl -u elastic -X PUT <ES_URL>/pitel_crm_cdr \
   -H 'Content-Type: application/json' \
   --data-binary @mappings/pitel_crm_cdr.json
 ```
-
-### 3.3. Đổi danh sách IP được vào RabbitMQ GUI
-
-Sửa `RABBITMQ_GUI_ALLOW_IPS` trong `.env`, rồi chạy lại `docker compose up -d traefik`.
