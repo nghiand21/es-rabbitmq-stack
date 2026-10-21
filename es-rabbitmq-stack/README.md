@@ -168,7 +168,7 @@ DOMAIN=es.example.com
 ACME_EMAIL=devops@example.com
 ```
 
-Mở port **80, 9200, 15672, 5671** (port 80 để xin và tự gia hạn SSL).
+Mở port **80, 9200, 15672, 5671**. Port 80 phải mở cho `0.0.0.0/0` (Let's Encrypt xác thực domain qua port này).
 
 ### 2.2. Deploy
 
@@ -192,6 +192,31 @@ RabbitMQ GUI: từ mạng công ty mở `https://<DOMAIN>:15672`, đăng nhập 
 - RabbitMQ: `amqps://<user>:<pass>@<DOMAIN>:5671/`
 
 Dùng domain, không dùng IP.
+
+### 2.5. SSL tự gia hạn
+
+> ⚠️ Cert Let's Encrypt hết hạn sau 90 ngày. Cert hết hạn thì CCP **mất kết nối tới ES và RabbitMQ**.
+
+Traefik tự kiểm tra mỗi ngày và gia hạn khi cert còn dưới 30 ngày. Gia hạn chỉ thành công khi đủ cả 4 điều kiện:
+
+- Port 80 mở cho `0.0.0.0/0`.
+- Server được phép kết nối ra internet (outbound 443 và DNS).
+- Bản ghi DNS A của domain vẫn trỏ về IP public của server.
+- Volume `letsencrypt` còn nguyên. **Không chạy `docker compose down -v`.**
+
+Let's Encrypt không gửi email báo cert sắp hết hạn. Cần tự kiểm tra định kỳ, hoặc thêm cảnh báo hết hạn cert vào hệ thống monitor.
+
+Xem ngày hết hạn:
+
+```bash
+echo | openssl s_client -connect <DOMAIN>:9200 -servername <DOMAIN> 2>/dev/null | openssl x509 -noout -enddate
+```
+
+Xem log gia hạn khi có lỗi:
+
+```bash
+docker logs traefik 2>&1 | grep -i acme | tail -20
+```
 
 ## 3. Vận hành
 
