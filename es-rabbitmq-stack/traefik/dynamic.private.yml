@@ -1,14 +1,14 @@
-# Chế độ private: Traefik chỉ còn RabbitMQ GUI (public, giới hạn IP công ty).
+# Chế độ private: không có domain. Traefik chỉ còn RabbitMQ GUI, truy cập bằng
+# https://<IP public>:15672 (cert tự ký của Traefik), giới hạn IP công ty.
 # ES và AMQP đi thẳng qua IP private, không qua Traefik.
 http:
   routers:
     rabbitmq-gui:
       entryPoints: [rabbitmq-gui]
-      rule: 'Host(`{{ env "DOMAIN" }}`)'
+      rule: 'PathPrefix(`/`)'
       service: rabbitmq-gui
       middlewares: [office-only]
-      tls:
-        certResolver: le
+      tls: {}
   middlewares:
     office-only:
       ipAllowList:

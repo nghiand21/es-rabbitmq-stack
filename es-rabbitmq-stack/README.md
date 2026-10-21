@@ -7,19 +7,20 @@
 | **IP private** — ES/RabbitMQ chung hạ tầng vật lý / mạng nội bộ với tổng đài | **Phần 1** (không SSL/TLS cho ES và AMQP) |
 | **Internet** — ES/RabbitMQ ở server/DC khác, đi qua IP public | **Phần 2** (SSL/TLS Let's Encrypt) |
 
-Cả 2 chế độ đều phải làm **Phần 0** trước. RabbitMQ GUI ở cả 2 chế độ đều ra public qua `https://<DOMAIN>:15672`, **chỉ cho phép IP công ty** (`RABBITMQ_GUI_ALLOW_IPS`).
+Cả 2 chế độ đều phải làm **Phần 0** trước. RabbitMQ GUI ở cả 2 chế độ đều ra public qua HTTPS, **chỉ cho phép IP công ty** (`RABBITMQ_GUI_ALLOW_IPS`).
 
-> Chỉ chọn Phần 1 khi mạng private là mạng nội bộ riêng của mình (cùng host / cùng VLAN). Nếu "private" nhưng dùng chung với khách hàng khác hoặc đi qua link không mã hoá giữa 2 site → dùng Phần 2.
+> Chỉ chọn Phần 1 khi tổng đài có IP private cùng mạng nội bộ riêng của mình với server này (cùng host / cùng VLAN / cùng mạng private trên cloud). Nếu "private" nhưng dùng chung với khách hàng khác hoặc đi qua link không mã hoá giữa 2 site → dùng Phần 2.
 
-| Dịch vụ | Phần 1 – Local (IP private) | Phần 2 – Internet |
+| | Phần 1 – Local (IP private) | Phần 2 – Internet |
 |---|---|---|
 | Elasticsearch | `http://<PRIVATE_IP>:9200` | `https://<DOMAIN>:9200` |
 | RabbitMQ AMQP | `amqp://<PRIVATE_IP>:5672` | `amqps://<DOMAIN>:5671` |
-| RabbitMQ GUI | `https://<DOMAIN>:15672` (chỉ IP công ty) | `https://<DOMAIN>:15672` (chỉ IP công ty) |
+| RabbitMQ GUI (chỉ IP công ty) | `https://<IP public>:15672` (cert tự ký) | `https://<DOMAIN>:15672` |
+| Cần domain + DNS | Không | Có, bản ghi A trỏ về IP public server |
 | File compose | `compose.private.yaml` | `compose.yaml` |
-| Port firewall mở public | **80, 15672** | **80, 9200, 15672, 5671** |
+| Port mở ra internet | **15672** (chỉ IP công ty) | **80, 9200, 15672, 5671** |
 
-Port 80 dùng để xin và tự gia hạn SSL cho GUI (và ES/AMQPS ở Phần 2), phải mở. Bản ghi DNS A của `<DOMAIN>` trỏ về IP public server.
+Ở Phần 2, port 80 dùng để xin và tự gia hạn SSL Let's Encrypt, phải mở.
 
 ## 0. Chuẩn bị chung (cả 2 chế độ)
 
@@ -55,14 +56,13 @@ sed -i "s/RABBITMQ_PASS=CHANGE_ME/RABBITMQ_PASS=$(openssl rand -hex 16)/" .env
 chmod 600 .env
 ```
 
-Sửa domain, email và IP được vào GUI trong `.env`:
+Sửa IP được vào RabbitMQ GUI trong `.env` (nhiều IP cách nhau dấu phẩy, VD `113.161.95.53/32, 1.2.3.4/32`):
 
 ```ini
-DOMAIN=es.example.com
-ACME_EMAIL=devops@example.com
-# Nhiều IP cách nhau dấu phẩy, VD: 113.161.95.53/32, 1.2.3.4/32
 RABBITMQ_GUI_ALLOW_IPS=113.161.95.53/32
 ```
+
+`DOMAIN` và `ACME_EMAIL` chỉ dùng cho Phần 2, Phần 1 bỏ qua.
 
 ### 0.4. Thông tin tài khoản
 
@@ -75,19 +75,36 @@ Sau đó làm **Phần 1** hoặc **Phần 2**, không làm cả hai.
 
 ## 1. Triển khai LOCAL — tổng đài kết nối qua IP private
 
-ES và AMQP đi plaintext qua IP private (vẫn có user/pass). Chỉ RabbitMQ GUI đi qua Traefik + SSL.
+ES và AMQP đi plaintext qua IP private (vẫn có user/pass). Không cần domain. RabbitMQ GUI đi qua Traefik với cert tự ký.
 
 ### 1.1. Khai báo IP private
 
 Thêm IP private của server này (cùng mạng với tổng đài) vào `.env`:
 
 ```ini
-PRIVATE_IP=10.0.0.10
+PRIVATE_IP=192.168.0.148
 ```
 
-Bắt buộc phải set: ES (9200) và AMQP (5672) chỉ bind vào IP này. Không bind `0.0.0.0` vì port Docker publish **đi vòng qua UFW/iptables**, firewall không chặn được. Để trống thì compose sẽ báo lỗi và dừng.
+Bắt buộc phải set: ES (9200) và AMQP (5672) chỉ bind vào IP này. Để trống thì compose sẽ báo lỗi và dừng.
 
-### 1.2. Deploy
+### 1.2. Firewall / Security Group (BẮT BUỘC)
+
+Chỉ bind `PRIVATE_IP` là **chưa đủ**. Trên cloud (CMC, ...) IP public được NAT 1:1 về IP private, nên truy cập `<IP public>:9200` từ internet vẫn tới được ES. Cũng không dùng được UFW vì port Docker publish đi vòng qua UFW. Phải chặn ở Security Group của cloud (stateful):
+
+**Inbound** (ngoài các rule này là chặn hết):
+
+| Port | Nguồn | Mục đích |
+|---|---|---|
+| 22/tcp | IP công ty / bastion | SSH — **thêm rule này trước** để không mất SSH |
+| 15672/tcp | `113.161.95.53/32` | RabbitMQ GUI |
+| 9200/tcp | dải private của tổng đài (VD `192.168.0.0/24`) | Elasticsearch |
+| 5672/tcp | dải private của tổng đài | AMQP |
+
+**Outbound:** cho phép tất cả (`0.0.0.0/0`, any) để còn `docker pull`, `apt`, DNS. Không có rule outbound nào thì server không tự kết nối ra ngoài được.
+
+Kiểm tra VM **không còn gắn Security Group nào khác** mở các port trên (rule của nhiều SG được cộng dồn).
+
+### 1.3. Deploy
 
 ```bash
 docker compose -f compose.private.yaml up -d
@@ -95,7 +112,7 @@ docker compose -f compose.private.yaml up -d
 
 Chờ 2–5 phút để service setup xong. Lúc đầu `es-writer` có thể restart vài lần do RabbitMQ chưa sẵn sàng, sau đó tự ổn.
 
-### 1.3. Kiểm tra
+### 1.4. Kiểm tra
 
 Chạy từ server tổng đài:
 
@@ -104,11 +121,11 @@ curl -u elastic http://<PRIVATE_IP>:9200
 nc -zv <PRIVATE_IP> 5672
 ```
 
-Từ ngoài internet `<IP public>:9200` và `:5672` phải **không** vào được.
+Từ một máy ngoài internet, `telnet <IP public> 9200` và `telnet <IP public> 5672` phải bị **timeout**.
 
-RabbitMQ GUI: từ mạng công ty truy cập `https://<DOMAIN>:15672`, đăng nhập bằng user/pass RabbitMQ, check tab **Channels**. Ngoài mạng công ty sẽ nhận `403 Forbidden`.
+RabbitMQ GUI: từ mạng công ty truy cập `https://<IP public>:15672`. Trình duyệt sẽ cảnh báo cert (cert tự ký), chọn Advanced → Proceed. Đăng nhập bằng user/pass RabbitMQ, check tab **Channels**. Ngoài mạng công ty sẽ nhận `403 Forbidden` (hoặc timeout nếu Security Group đã chặn).
 
-### 1.4. Config CCP
+### 1.5. Config CCP
 
 Trong file config json của CCP (tham khảo Pitel04):
 
@@ -121,7 +138,16 @@ Tiếp tục **Phần 3**, thay `<ES_URL>` bằng `http://<PRIVATE_IP>:9200`.
 
 Toàn bộ ES, AMQP, GUI đi qua Traefik với SSL Let's Encrypt tự gia hạn.
 
-### 2.1. Deploy
+### 2.1. Khai báo domain
+
+Bản ghi DNS A của domain trỏ về IP public server. Sửa trong `.env`:
+
+```ini
+DOMAIN=es.example.com
+ACME_EMAIL=devops@example.com
+```
+
+### 2.2. Deploy
 
 ```bash
 docker compose up -d
@@ -129,7 +155,7 @@ docker compose up -d
 
 Chờ 2–5 phút để service setup xong. SSL được xin tự động ở lần chạy đầu.
 
-### 2.2. Kiểm tra
+### 2.3. Kiểm tra
 
 ```bash
 curl -u elastic https://<DOMAIN>:9200
@@ -139,7 +165,7 @@ Postman: `GET https://{{DOMAIN}}:9200`, Authorization = Basic Auth (user `elasti
 
 RabbitMQ GUI: từ mạng công ty truy cập `https://<DOMAIN>:15672`, đăng nhập bằng user/pass RabbitMQ, check tab **Channels**. Ngoài mạng công ty sẽ nhận `403 Forbidden`.
 
-### 2.3. Config CCP
+### 2.4. Config CCP
 
 Trong file config json của CCP (tham khảo Pitel04):
 
