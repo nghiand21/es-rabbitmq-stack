@@ -1,0 +1,49 @@
+# Chế độ private: ES/RabbitMQ chung hạ tầng với tổng đài, giao tiếp qua IP private, không TLS.
+#   docker compose -f compose.private.yaml up -d
+# Port bind vào PRIVATE_IP (Docker publish port đi vòng qua UFW, không bind 0.0.0.0).
+# RabbitMQ GUI vẫn ra public qua Traefik + SSL, chỉ cho IP trong RABBITMQ_GUI_ALLOW_IPS.
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION}
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --entrypoints.web.address=:80            # chỉ dùng để xin/renew SSL
+      - --entrypoints.rabbitmq-gui.address=:15672
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --log.format=json
+    environment:
+      DOMAIN: ${DOMAIN}
+      RABBITMQ_GUI_ALLOW_IPS: ${RABBITMQ_GUI_ALLOW_IPS:?Chưa set RABBITMQ_GUI_ALLOW_IPS trong .env}
+    ports:
+      - "80:80"
+      - "15672:15672"
+    volumes:
+      - ./traefik/dynamic.private.yml:/etc/traefik/dynamic.yml:ro
+      - letsencrypt:/letsencrypt
+    networks:
+      - proxy
+
+  es:
+    extends: { file: compose.yaml, service: es }
+    ports:
+      - "${PRIVATE_IP:?Chưa set PRIVATE_IP trong .env}:9200:9200"
+
+  rabbitmq:
+    extends: { file: compose.yaml, service: rabbitmq }
+    ports:
+      - "${PRIVATE_IP:?Chưa set PRIVATE_IP trong .env}:5672:5672"
+
+  es-writer:
+    extends: { file: compose.yaml, service: es-writer }
+
+networks:
+  proxy:
+    external: true
+
+volumes:
+  esdata:
+  letsencrypt:

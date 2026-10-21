@@ -16,6 +16,7 @@ services:
       - --log.format=json
     environment:
       DOMAIN: ${DOMAIN}
+      RABBITMQ_GUI_ALLOW_IPS: ${RABBITMQ_GUI_ALLOW_IPS:?Chưa set RABBITMQ_GUI_ALLOW_IPS trong .env}
     ports:
       - "80:80"
       - "9200:9200"

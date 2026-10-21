@@ -10,8 +10,13 @@ http:
       entryPoints: [rabbitmq-gui]
       rule: 'Host(`{{ env "DOMAIN" }}`)'
       service: rabbitmq-gui
+      middlewares: [office-only]
       tls:
         certResolver: le
+  middlewares:
+    office-only:
+      ipAllowList:
+        sourceRange: [{{ env "RABBITMQ_GUI_ALLOW_IPS" }}]
   services:
     es:
       loadBalancer:
