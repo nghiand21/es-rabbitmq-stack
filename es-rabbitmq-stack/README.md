@@ -182,14 +182,19 @@ Lệnh `docker compose` bên dưới: Phần 1 thêm `-f compose.private.yaml`, 
 
 ### 3.1. Muốn tạo thêm Consumers thứ 2
 
-Thêm service `es-writer-2` vào `compose.yaml` (copy y hệt `es-writer`, đổi `container_name: es-writer-2`). Nếu đang chạy Phần 1, thêm vào `compose.private.yaml`:
+- **Phần 1 (Local):** chỉ sửa `compose.private.yaml`, thêm vào dưới `services:`:
 
-```yaml
-  es-writer-2:
-    extends: { file: compose.yaml, service: es-writer-2 }
-```
+  ```yaml
+    es-writer-2:
+      extends: { file: compose.yaml, service: es-writer }
+      container_name: es-writer-2
+  ```
 
-Rồi chạy lại `docker compose up -d`. Trên GUI có show **Consumers: 2** là được.
+  Rồi chạy `docker compose -f compose.private.yaml up -d`.
+
+- **Phần 2 (Internet):** chỉ sửa `compose.yaml`, thêm service `es-writer-2` (copy y hệt `es-writer`, đổi `container_name: es-writer-2`). Rồi chạy `docker compose up -d`.
+
+Trên GUI có show **Consumers: 2** là được.
 
 ### 3.2. Add PBX - CCP vào ELK có sẵn
 
